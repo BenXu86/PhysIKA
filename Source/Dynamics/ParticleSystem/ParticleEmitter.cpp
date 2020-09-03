@@ -19,9 +19,13 @@ namespace PhysIKA
 	{
 
 	}
-
 	template<typename TDataType>
 	void ParticleEmitter<TDataType>::advance(Real dt)
+	{
+
+	}
+	template<typename TDataType>
+	void ParticleEmitter<TDataType>::advance_fluid(Real dt)
 	{
 		gen_random();
 		DeviceArray<Coord>& cur_points0 = this->currentPosition()->getValue();

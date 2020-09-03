@@ -23,6 +23,7 @@ namespace PhysIKA
 		virtual ~ParticleEmitter();
 		bool addOutput(std::shared_ptr<ParticleFluid<TDataType>> child, std::shared_ptr<ParticleEmitter<TDataType>> self);
 		void getRotMat(Coord rot);
+		void advance_fluid(Real dt);// override;
 		void advance(Real dt) override;
 		virtual void gen_random();
 

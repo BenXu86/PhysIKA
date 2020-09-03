@@ -39,6 +39,29 @@ namespace PhysIKA
 		
 		
 		std::vector<std::shared_ptr<ParticleEmitter<TDataType>>> m_particleEmitters = this->getParticleEmitters();
+
+		if (m_particleEmitters.size() > 0)
+		{
+			DeviceArray<Coord>& position = this->currentPosition()->getValue();
+			DeviceArray<Coord>& velocity = this->currentVelocity()->getValue();
+			DeviceArray<Coord>& force = this->currentForce()->getValue();
+
+			int start = 0;
+			for (int i = 0; i < m_particleEmitters.size(); i++)
+			{
+				DeviceArray<Coord>& points = m_particleEmitters[i]->currentPosition()->getValue();
+				DeviceArray<Coord>& vels = m_particleEmitters[i]->currentVelocity()->getValue();
+				DeviceArray<Coord>& fors = m_particleEmitters[i]->currentForce()->getValue();
+				int num = points.size();
+				cudaMemcpy(points.getDataPtr(), position.getDataPtr() + start, num * sizeof(Coord), cudaMemcpyDeviceToDevice);
+				cudaMemcpy(vels.getDataPtr(), velocity.getDataPtr() + start, num * sizeof(Coord), cudaMemcpyDeviceToDevice);
+				cudaMemcpy(fors.getDataPtr(), force.getDataPtr() + start, num * sizeof(Coord), cudaMemcpyDeviceToDevice);
+				start += num;
+				if(true)
+				m_particleEmitters[i]->advance_fluid(dt);
+			}
+		}
+
 		if(m_particleEmitters.size() > 0)
 		{ 
 			
@@ -79,26 +102,7 @@ namespace PhysIKA
 		nModel->step(this->getDt());
 		//printf("%d\n", this->currentPosition()->getElementCount());
 
-		if (m_particleEmitters.size() > 0)
-		{
-			DeviceArray<Coord>& position = this->currentPosition()->getValue();
-			DeviceArray<Coord>& velocity = this->currentVelocity()->getValue();
-			DeviceArray<Coord>& force = this->currentForce()->getValue();
-
-			int start = 0;
-			for (int i = 0; i < m_particleEmitters.size(); i++)
-			{
-				DeviceArray<Coord>& points = m_particleEmitters[i]->currentPosition()->getValue();
-				DeviceArray<Coord>& vels = m_particleEmitters[i]->currentVelocity()->getValue();
-				DeviceArray<Coord>& fors = m_particleEmitters[i]->currentForce()->getValue();
-				int num = points.size();
-				cudaMemcpy(points.getDataPtr(), position.getDataPtr() + start ,num * sizeof(Coord), cudaMemcpyDeviceToDevice);
-				cudaMemcpy(vels.getDataPtr(), velocity.getDataPtr() + start, num * sizeof(Coord), cudaMemcpyDeviceToDevice);
-				cudaMemcpy(fors.getDataPtr(), force.getDataPtr() + start, num * sizeof(Coord), cudaMemcpyDeviceToDevice);
-				start += num;
-				
-			}
-		}
+		
 
 		//if (m_ParticleEmitter != NULL)
 		//	m_ParticleEmitter->advance(this->getDt());
