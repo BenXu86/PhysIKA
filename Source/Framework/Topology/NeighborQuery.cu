@@ -54,8 +54,10 @@ namespace PhysIKA
 		m_lowBound = Coord(sceneLow[0], sceneLow[1], sceneLow[2]);
 		m_highBound = Coord(sceneUp[0], sceneUp[1], sceneUp[2]);
 		this->inRadius()->setValue(Real(0.011));
-
+		
+		m_hash.multi_grid = multi_grid;
 		m_hash.setSpace(this->inRadius()->getValue(), m_lowBound, m_highBound);
+		
 
 //		attachField(&m_radius, "Radius", "Radius of the searching area", false);
 //		attachField(&m_position, "position", "Storing the particle positions!", false);
@@ -122,23 +124,7 @@ namespace PhysIKA
 		HostArray<Coord> hostPos;
 		hostPos.resize(pNum);
 
-// 		Function1Pt::copy(hostPos, m_position.getValue());
-// 
-// 		m_lowBound = Vector3f(10000000, 10000000, 10000000);
-// 		m_highBound = Vector3f(-10000000, -10000000, -10000000);
-// 
-// 		for (int i = 0; i < pNum; i++)
-// 		{
-// 			m_lowBound[0] = min(hostPos[i][0], m_lowBound[0]);
-// 			m_lowBound[1] = min(hostPos[i][1], m_lowBound[1]);
-// 			m_lowBound[2] = min(hostPos[i][2], m_lowBound[2]);
-// 
-// 			m_highBound[0] = max(hostPos[i][0], m_highBound[0]);
-// 			m_highBound[1] = max(hostPos[i][1], m_highBound[1]);
-// 			m_highBound[2] = max(hostPos[i][2], m_highBound[2]);
-// 		}
-
-	
+		m_hash.multi_grid = multi_grid;
 		m_hash.setSpace(this->inRadius()->getValue(), m_lowBound, m_highBound);
 
 //		m_reduce = Reduction<int>::Create(m_position.getElementCount());
@@ -153,6 +139,12 @@ namespace PhysIKA
 	{
 		if(this->inTriangleIndex()->isEmpty())
 		{ 
+			if(triangle_first)
+			{ 
+				m_hash.multi_grid = false;
+				m_hash.setSpace(this->inRadius()->getValue(), m_lowBound, m_highBound);
+			}
+			triangle_first = false;
 			if (!this->inPosition()->isEmpty())
 			{
 				int p_num = this->inPosition()->getElementCount();
@@ -183,12 +175,13 @@ namespace PhysIKA
 				{
 					this->outNeighborhood()->setElementCount(p_num);
 				}
-
-				if (triangle_first)
+				
+				m_hash.multi_grid = multi_grid;
+				
+				if (triangle_first || multi_grid)
 					m_hash.clear();
-				//printf("hash clear\n");
 
-				if (triangle_first)
+				if (triangle_first || multi_grid)
 					m_hash.construct(this->inPosition()->getValue(), this->inTriangleIndex()->getValue(), this->inTrianglePosition()->getValue());
 
 				//printf("hash constract\n");
@@ -429,6 +422,131 @@ namespace PhysIKA
 		}
 		
 	}
+	template<typename Real, typename Coord, typename TDataType>
+	__global__ void K_GetMultiNeighborCountTri(
+		DeviceArray<int> count,
+		DeviceArray<Coord> position_new,
+		DeviceArray<Coord> position,
+		DeviceArray<TopologyModule::Triangle> m_triangle_index,
+		DeviceArray<Coord> positionTri,
+		GridHash<TDataType> hash,
+		Real h)
+	{
+		int pId = threadIdx.x + (blockIdx.x * blockDim.x);
+		if (pId >= position_new.size()) return;
+
+		Coord pos_ijk = position_new[pId];
+
+		int j = 0;
+		bool tmp = false;
+		int counter = 0;
+		//printf("%d\n", hash.maxlevel);
+		for (int c = 0; c <= hash.maxlevel; c++)
+		{
+			int cId = hash.getIndex(pos_ijk, c);
+			//if (c == 3)
+			//	printf("cId: %d sum: %d\n", cId, hash.getCounter(cId));
+
+			if (cId >= 0) {
+				//	printf("YES a valid c, num : %d\n", hash.getCounter(cId));
+
+
+				int totalNum = hash.getCounter(cId);
+				for (int i = 0; i < totalNum; i++) {
+					int nbId = hash.getParticleId(cId, i);
+					if (nbId >= 0)
+					{
+					}
+					else
+					{
+						int nb_id = nbId;
+						Real d_ij;
+						nb_id *= -1;
+						nbId *= -1;
+						nbId -= 1;
+						nb_id -= 1;
+						Point3D p3d = Point3D(pos_ijk);
+						Triangle3D t3d = Triangle3D(positionTri[m_triangle_index[nbId][0]], positionTri[m_triangle_index[nbId][1]], positionTri[m_triangle_index[nbId][2]]);
+
+						d_ij = p3d.distance(t3d);
+						if ((d_ij) < h)
+						{
+							if (abs(d_ij) < h)
+							{
+								counter++;
+							}
+
+
+						}
+
+					}
+				}
+			}
+		}
+
+		count[pId] = counter;
+
+	}
+
+	template<typename Real, typename Coord, typename TDataType>
+	__global__ void K_GetMultiNeighborElementsTri(
+		NeighborList<int> nbr,
+		DeviceArray<Coord> position_new,
+		DeviceArray<Coord> position,
+		DeviceArray<TopologyModule::Triangle> m_triangle_index,
+		DeviceArray<Coord> positionTri,
+		GridHash<TDataType> hash,
+		Real h)
+	{
+		int pId = threadIdx.x + (blockIdx.x * blockDim.x);
+		if (pId >= position_new.size()) return;
+
+		Coord pos_ijk = position_new[pId];
+		//int3 gId3 = hash.getIndex3(pos_ijk);
+
+		int j = 0;
+		bool tmp = false;
+
+
+		for (int c = 0; c <= hash.maxlevel; c++)
+		{
+			int cId = hash.getIndex(pos_ijk, c);
+			if (cId >= 0) {
+				int totalNum = hash.getCounter(cId);
+				for (int i = 0; i < totalNum; i++) {
+					int nbId = hash.getParticleId(cId, i);
+					if (nbId >= 0)
+					{
+					}
+					else
+					{
+						int nb_id = nbId;
+						Real d_ij;
+						nb_id *= -1;
+						nbId *= -1;
+						nbId -= 1;
+						nb_id -= 1;
+						Point3D p3d = Point3D(pos_ijk);
+						Triangle3D t3d = Triangle3D(positionTri[m_triangle_index[nbId][0]], positionTri[m_triangle_index[nbId][1]], positionTri[m_triangle_index[nbId][2]]);
+						//d_ij = h * 0.5;//
+						d_ij = p3d.distance(t3d);
+						if ((d_ij) < h)
+						{
+							if (abs(d_ij) < h)
+							{
+								nbr.setElement(pId, j, (-nbId - 1));
+								j++;
+							}
+
+
+						}
+
+					}
+				}
+			}
+		}
+
+	}
 
 	template<typename TDataType>
 	void NeighborQuery<TDataType>::queryNeighborSize(DeviceArray<int>& num, DeviceArray<Coord>& pos, Real h)
@@ -443,6 +561,14 @@ namespace PhysIKA
 	{
 		uint pDims = cudaGridSize(num.size(), BLOCK_SIZE);
 		K_CalNeighborSizeTri << <pDims, BLOCK_SIZE >> > (num, pos, this->inPosition()->getValue(), Tris, posT, m_hash, h);
+		cuSynchronize();
+	}
+	template<typename TDataType>
+	void NeighborQuery<TDataType>::queryNeighborSizeTriMulti(DeviceArray<int>& num, DeviceArray<Coord>& pos, DeviceArray<Triangle>& Tris, DeviceArray<Coord>& posT, Real h)
+	{
+		uint pDims = cudaGridSize(num.size(), BLOCK_SIZE);
+		
+		K_GetMultiNeighborCountTri << <pDims, BLOCK_SIZE >> > (num, pos, this->inPosition()->getValue(), Tris, posT, m_hash, h);
 		cuSynchronize();
 	}
 
@@ -487,8 +613,10 @@ namespace PhysIKA
 		DeviceArray<int>& nbrNum = nbrList.getIndex();
 		if (nbrNum.size() != pos.size())
 			nbrList.resize(pos.size());
-
-		queryNeighborSizeTri(nbrNum, pos, Tris, posT, h);
+		if(multi_grid)
+			queryNeighborSizeTriMulti(nbrNum, pos, Tris, posT, h);
+		else
+			queryNeighborSizeTri(nbrNum, pos, Tris, posT, h);
 
 		int sum = m_reduce.accumulate(nbrNum.getDataPtr(), nbrNum.size());
 
@@ -503,7 +631,10 @@ namespace PhysIKA
 			elements.reset();
 
 			uint pDims = cudaGridSize(pos.size(), BLOCK_SIZE);
-			K_GetNeighborElementsTri << <pDims, BLOCK_SIZE >> > (nbrList, pos, this->inPosition()->getValue(), Tris, posT, m_hash, h);
+			if(multi_grid)
+				K_GetMultiNeighborElementsTri << <pDims, BLOCK_SIZE >> > (nbrList, pos, this->inPosition()->getValue(), Tris, posT, m_hash, h);
+			else
+				K_GetNeighborElementsTri << <pDims, BLOCK_SIZE >> > (nbrList, pos, this->inPosition()->getValue(), Tris, posT, m_hash, h);
 			cuSynchronize();
 		}
 

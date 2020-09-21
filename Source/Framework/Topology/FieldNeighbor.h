@@ -78,6 +78,8 @@ void NeighborField<T>::setElementCount(int num, int nbrSize /*= 0*/)
 	//std::shared_ptr<NeighborList<T>> data = getReference();
 	if (arr == nullptr)
 	{
+		if (m_data != nullptr)
+			m_data->release();
 		m_data = num <= 0 ? nullptr : std::make_shared<NeighborList<T>>(num, nbrSize);
 	}
 	else

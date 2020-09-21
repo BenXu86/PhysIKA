@@ -47,6 +47,7 @@ namespace PhysIKA {
 
 		void queryNeighborTriDynamic(NeighborList<int>& nbrList, DeviceArray<Coord>& pos, DeviceArray<Coord>& posT, DeviceArray<Triangle>& Tris, Real h);
 		void queryNeighborSizeTri(DeviceArray<int>& num, DeviceArray<Coord>& pos, DeviceArray<Triangle>& Tris, DeviceArray<Coord>& posT, Real h);
+		void queryNeighborSizeTriMulti(DeviceArray<int>& num, DeviceArray<Coord>& pos, DeviceArray<Triangle>& Tris, DeviceArray<Coord>& posT, Real h);
 
 
 	public:
@@ -91,6 +92,8 @@ namespace PhysIKA {
 		Reduction<int> m_reduce;
 		Scan m_scan;
 
+
+		bool multi_grid = true;
 		bool triangle_first = true;
 	};
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "GridHash.h"
 #include "Core/Utility.h"
+#include "Primitive3D.h"
 
 namespace PhysIKA {
 
@@ -72,6 +73,51 @@ namespace PhysIKA {
 		}
 
 		m_reduce = Reduction<int>::Create(num);
+		if (multi_grid)
+			initializeMultiLevel();
+	}
+	template<typename TDataType>
+	void GridHash<TDataType>::initializeMultiLevel()
+	{
+		release();
+		int level = 0;
+		Coord tmp = hi - lo;
+		Real maxx = max(tmp[0], tmp[1]);
+		maxx = max(maxx, tmp[2]);
+		int padding = 2;
+
+		while ((1 << level) * ds < maxx && level < 10)
+		{
+			Real ds_i = (1 << level) * ds;
+			Coord nSeg = (hi - lo) / ds_i;
+
+			nx = ceil(nSeg[0]) + 1 + 2 * padding;
+			ny = ceil(nSeg[1]) + 1 + 2 * padding;
+			nz = ceil(nSeg[2]) + 1 + 2 * padding;
+
+			int num_i = nx * ny * nz;
+			nx_list[level] = nx;
+			ny_list[level] = ny;
+			nz_list[level] = nz;
+
+			prefix[level] = num_i;
+			if (level >= 1)
+				prefix[level] += prefix[level - 1];
+			level++;
+		};
+		level--;
+		num = prefix[level];
+		maxlevel = level;
+
+		cuSafeCall(cudaMalloc((void**)&counter, num * sizeof(int)));
+		cuSafeCall(cudaMalloc((void**)&index, num * sizeof(int)));
+		if (m_reduce != nullptr)
+		{
+			delete m_reduce;
+		}
+
+		m_reduce = Reduction<int>::Create(num);
+
 	}
 
 	template<typename TDataType>
@@ -92,9 +138,16 @@ namespace PhysIKA {
 	{
 		int pId = threadIdx.x + (blockIdx.x * blockDim.x);
 		if (pId >= tri.size()) return;
-		
+		//printf("TRISIZE:%.3lf %.3lf %.3lf\n",hash.lo[0], hash.lo[1], hash.lo[2]);
+		/*
+		int gId1 = hash.getIndex(pos[tri[pId][0]]);
+		int gId2 = hash.getIndex(pos[tri[pId][1]]);
+		int gId3 = hash.getIndex(pos[tri[pId][2]]);
+		*/
 		Real ds = hash.ds;
-	//	printf("%.3lf\n", ds);
+		//Coord3D lo = hash.lo;
+		//Coord3D hi = hash.hi;
+
 		int i0 = floor((pos[tri[pId][0]][0] - hash.lo[0]) / hash.ds);
 		int j0 = floor((pos[tri[pId][0]][1] - hash.lo[1]) / hash.ds);
 		int k0 = floor((pos[tri[pId][0]][2] - hash.lo[2]) / hash.ds);
@@ -132,53 +185,108 @@ namespace PhysIKA {
 
 		Triangle3D t3d = Triangle3D(pos[tri[pId][0]], pos[tri[pId][1]], pos[tri[pId][2]]);
 		//printf("%d %d %d\n",addi,addj,addk);
-		for (int li = imin; li <= imax; li += addi)
-			for (int lj = jmin; lj <= jmax; lj += addj)
-				for (int lk = kmin; lk <= kmax; lk += addk)
+		for (int li = imin; li <= imax; li += 1)
+			for (int lj = jmin; lj <= jmax; lj += 1)
+				for (int lk = kmin; lk <= kmax; lk += 1)
 				{
-					int ri = min(imax, li + addi - 1);
-					int rj = min(jmax, lj + addj - 1);
-					int rk = min(kmax, lk + addk - 1);
 
-					Real ABli = li * ds + hash.lo[0];
-					Real ABri = ri * ds + ds + hash.lo[0];
-					Real ABlj = lj * ds + hash.lo[1];
-					Real ABrj = rj * ds + ds + hash.lo[1];
-					Real ABlk = lk * ds + hash.lo[2];
-					Real ABrk = rk * ds + ds + hash.lo[2];
+					int i = li, j = lj, k = lk;
+					Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * ds * 10.0,
+						j * ds + hash.lo[1] - 0.1 * ds * 10.0,
+						k * ds + hash.lo[2] - 0.1 * ds * 10.0);
+					Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * ds * 10.0,
+						j * ds + ds + hash.lo[1] + 0.1 * ds * 10.0,
+						k * ds + ds + hash.lo[2] + 0.1 * ds * 10.0);
+					AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
 
-					Coord3D ABP1 = Coord3D(ABli - 0.1 * ds * 10.0, ABlj - 0.1 * ds * 10.0, ABlk - 0.1 * ds * 10.0);
-					Coord3D ABP2 = Coord3D(ABri + 0.1 * ds * 10.0, ABrj + 0.1 * ds * 10.0, ABrk + 0.1 * ds * 10.0);
-					AlignedBox3D AABB = AlignedBox3D(ABP1, ABP2);
-
-					if (AABB.meshInsert(t3d))
+					if (AABB2.meshInsert(t3d))
 					{
+						int gId = hash.getIndex(i, j, k);
+						if (gId != INVALID)
+							atomicAdd(&(hash.index[gId]), 1);
 
-					
-
-						for (int i = li; i <= ri; i++)
-							for (int j = lj; j <= rj; j++)
-								for (int k = lk; k <= rk; k++)
-								{
-									Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * ds * 10.0,
-										j * ds + hash.lo[1] - 0.1 * ds * 10.0,
-										k * ds + hash.lo[2] - 0.1 * ds * 10.0);
-									Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * ds * 10.0,
-										j * ds + ds + hash.lo[1] + 0.1 * ds * 10.0,
-										k * ds + ds + hash.lo[2] + 0.1 * ds * 10.0);
-									AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
-
-									if (AABB2.meshInsert(t3d))
-									{
-										int gId = hash.getIndex(i, j, k);
-										if (gId != INVALID)
-											atomicAdd(&(hash.index[gId]), 1);
-										
-									}
-									
-								}
 					}
-					
+
+				}
+
+	}
+
+	template<typename TDataType>
+	__global__ void K_Multi_AddTriNumber(GridHash<TDataType> hash, Array<typename TopologyModule::Triangle> tri, Array<typename TDataType::Coord> pos)
+	{
+		int pId = threadIdx.x + (blockIdx.x * blockDim.x);
+		if (pId >= tri.size()) return;
+
+		Real ds = hash.ds;
+		int level = -1;
+		int i0, j0, k0;
+		int i1, j1, k1;
+		int i2, j2, k2;
+		int imin, imax, jmin, jmax, kmin, kmax;
+		do {
+
+			level++;
+			ds = hash.ds * (Real)(1 << level);
+
+			i0 = floor((pos[tri[pId][0]][0] - hash.lo[0]) / ds);
+			j0 = floor((pos[tri[pId][0]][1] - hash.lo[1]) / ds);
+			k0 = floor((pos[tri[pId][0]][2] - hash.lo[2]) / ds);
+
+			i1 = floor((pos[tri[pId][1]][0] - hash.lo[0]) / ds);
+			j1 = floor((pos[tri[pId][1]][1] - hash.lo[1]) / ds);
+			k1 = floor((pos[tri[pId][1]][2] - hash.lo[2]) / ds);
+
+			i2 = floor((pos[tri[pId][2]][0] - hash.lo[0]) / ds);
+			j2 = floor((pos[tri[pId][2]][1] - hash.lo[1]) / ds);
+			k2 = floor((pos[tri[pId][2]][2] - hash.lo[2]) / ds);
+
+			imin = i0 < i1 ? i0 : i1;
+			imin = i2 < imin ? i2 : imin;
+			imax = i0 > i1 ? i0 : i1;
+			imax = i2 > imax ? i2 : imax;
+
+			jmin = j0 < j1 ? j0 : j1;
+			jmin = j2 < jmin ? j2 : jmin;
+			jmax = j0 > j1 ? j0 : j1;
+			jmax = j2 > jmax ? j2 : jmax;
+
+			kmin = k0 < k1 ? k0 : k1;
+			kmin = k2 < kmin ? k2 : kmin;
+			kmax = k0 > k1 ? k0 : k1;
+			kmax = k2 > kmax ? k2 : kmax;
+
+			imin--; jmin--; kmin--;
+			imax++; jmax++; kmax++;
+
+		} while ((imax - imin + 1) * (jmax - jmin + 1) * (kmax - kmin + 1) > 150 && level < hash.maxlevel);
+
+
+		//ds = hash.ds;
+		Triangle3D t3d = Triangle3D(pos[tri[pId][0]], pos[tri[pId][1]], pos[tri[pId][2]]);
+
+		for (int li = imin; li <= imax; li += 1)
+			for (int lj = jmin; lj <= jmax; lj += 1)
+				for (int lk = kmin; lk <= kmax; lk += 1)
+				{
+					int i = li, j = lj, k = lk;
+					Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * hash.ds * 10.0,
+						j * ds + hash.lo[1] - 0.1 * hash.ds * 10.0,
+						k * ds + hash.lo[2] - 0.1 * hash.ds * 10.0);
+					Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * hash.ds * 10.0,
+						j * ds + ds + hash.lo[1] + 0.1 * hash.ds * 10.0,
+						k * ds + ds + hash.lo[2] + 0.1 * hash.ds * 10.0);
+					AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
+
+					if (AABB2.meshInsert(t3d))
+					{
+						int gId = hash.getIndex(i, j, k, level);
+						//printf("^^^^^^^^^^^^^^^^^^^^^^^^^^^ %d %d %d\n", gId, level, INVALID);
+						if (gId != INVALID)
+							atomicAdd(&(hash.index[gId]), 1);
+
+					}
+
+
 				}
 
 	}
@@ -194,6 +302,8 @@ namespace PhysIKA {
 		if (gId < 0) return;
 
 		int index = atomicAdd(&(hash.counter[gId]), 1);
+		// 		index = index < hash.npMax - 1 ? index : hash.npMax - 1;
+		// 		hash.ids[gId * hash.npMax + index] = pId;
 		hash.ids[hash.index[gId] + index] = pId;
 	}
 
@@ -232,10 +342,8 @@ namespace PhysIKA {
 		kmin = k2 < kmin ? k2 : kmin;
 		int kmax = k0 > k1 ? k0 : k1;
 		kmax = k2 > kmax ? k2 : kmax;
-
 		imin--; jmin--; kmin--;
 		imax++; jmax++; kmax++;
-
 		int addi, addj, addk;
 		addi = int(sqrt((Real)imax - (Real)imin + 1));
 		addj = int(sqrt((Real)jmax - (Real)jmin + 1));
@@ -244,56 +352,116 @@ namespace PhysIKA {
 		Triangle3D t3d = Triangle3D(pos[tri[pId][0]], pos[tri[pId][1]], pos[tri[pId][2]]);
 
 
-		for (int li = imin; li <= imax; li += addi)
-			for (int lj = jmin; lj <= jmax; lj += addj)
-				for (int lk = kmin; lk <= kmax; lk += addk)
+		for (int li = imin; li <= imax; li += 1)
+			for (int lj = jmin; lj <= jmax; lj += 1)
+				for (int lk = kmin; lk <= kmax; lk += 1)
 				{
-					int ri = min(imax, li + addi - 1);
-					int rj = min(jmax, lj + addj - 1);
-					int rk = min(kmax, lk + addk - 1);
 
-					Real ABli = li * ds + hash.lo[0];
-					Real ABri = ri * ds + ds + hash.lo[0];
-					Real ABlj = lj * ds + hash.lo[1];
-					Real ABrj = rj * ds + ds + hash.lo[1];
-					Real ABlk = lk * ds + hash.lo[2];
-					Real ABrk = rk * ds + ds + hash.lo[2];
+					int i = li, j = lj, k = lk;
+					Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * ds * 10.0,
+						j * ds + hash.lo[1] - 0.1 * ds * 10.0,
+						k * ds + hash.lo[2] - 0.1 * ds * 10.0);
+					Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * ds * 10.0,
+						j * ds + ds + hash.lo[1] + 0.1 * ds * 10.0,
+						k * ds + ds + hash.lo[2] + 0.1 * ds * 10.0);
+					AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
 
-					Coord3D ABP1 = Coord3D(ABli - 0.1 * ds * 10.0, ABlj - 0.1 * ds * 10.0, ABlk - 0.1 * ds * 10.0);
-					Coord3D ABP2 = Coord3D(ABri + 0.1 * ds * 10.0, ABrj + 0.1 * ds * 10.0, ABrk + 0.1 * ds * 10.0);
-					AlignedBox3D AABB = AlignedBox3D(ABP1, ABP2);
-
-
-					if (AABB.meshInsert(t3d))
+					if (AABB2.meshInsert(t3d))
 					{
-						for (int i = li; i <= ri; i++)
-							for (int j = lj; j <= rj; j++)
-								for (int k = lk; k <= rk; k++)
-								{
-									Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * ds * 10.0,
-										j * ds + hash.lo[1] - 0.1 * ds * 10.0,
-										k * ds + hash.lo[2] - 0.1 * ds * 10.0);
-									Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * ds * 10.0,
-										j * ds + ds + hash.lo[1] + 0.1 * ds * 10.0,
-										k * ds + ds + hash.lo[2] + 0.1 * ds * 10.0);
-									AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
+						int gId = hash.getIndex(i, j, k);
 
-									if (AABB2.meshInsert(t3d))
-									{
-										int gId = hash.getIndex(i, j, k);
+						if (gId != INVALID)
+						{
+							int index = atomicAdd(&(hash.counter[gId]), 1);
+							hash.ids[hash.index[gId] + index] = -pId - 1;
+						}
 
-										if (gId != INVALID)
-										{
-											int index = atomicAdd(&(hash.counter[gId]), 1);
-											hash.ids[hash.index[gId] + index] = -pId - 1;
-										}
-
-									}
-								}
 					}
 				}
+
+
 	}
 
+	template<typename TDataType>
+	__global__ void K_Multi_AddTriElement(GridHash<TDataType> hash, Array<typename TopologyModule::Triangle> tri, Array<typename TDataType::Coord> pos)
+	{
+		int pId = threadIdx.x + (blockIdx.x * blockDim.x);
+		if (pId >= tri.size()) return;
+
+		Real ds = hash.ds;
+		int level = -1;
+		int i0, j0, k0;
+		int i1, j1, k1;
+		int i2, j2, k2;
+		int imin, imax, jmin, jmax, kmin, kmax;
+		do {
+
+			level++;
+			ds = hash.ds * (Real)(1 << level);
+
+			i0 = floor((pos[tri[pId][0]][0] - hash.lo[0]) / ds);
+			j0 = floor((pos[tri[pId][0]][1] - hash.lo[1]) / ds);
+			k0 = floor((pos[tri[pId][0]][2] - hash.lo[2]) / ds);
+
+			i1 = floor((pos[tri[pId][1]][0] - hash.lo[0]) / ds);
+			j1 = floor((pos[tri[pId][1]][1] - hash.lo[1]) / ds);
+			k1 = floor((pos[tri[pId][1]][2] - hash.lo[2]) / ds);
+
+			i2 = floor((pos[tri[pId][2]][0] - hash.lo[0]) / ds);
+			j2 = floor((pos[tri[pId][2]][1] - hash.lo[1]) / ds);
+			k2 = floor((pos[tri[pId][2]][2] - hash.lo[2]) / ds);
+
+			imin = i0 < i1 ? i0 : i1;
+			imin = i2 < imin ? i2 : imin;
+			imax = i0 > i1 ? i0 : i1;
+			imax = i2 > imax ? i2 : imax;
+
+			jmin = j0 < j1 ? j0 : j1;
+			jmin = j2 < jmin ? j2 : jmin;
+			jmax = j0 > j1 ? j0 : j1;
+			jmax = j2 > jmax ? j2 : jmax;
+
+			kmin = k0 < k1 ? k0 : k1;
+			kmin = k2 < kmin ? k2 : kmin;
+			kmax = k0 > k1 ? k0 : k1;
+			kmax = k2 > kmax ? k2 : kmax;
+
+			imin--; jmin--; kmin--;
+			imax++; jmax++; kmax++;
+
+		} while ((imax - imin + 1) * (jmax - jmin + 1) * (kmax - kmin + 1) > 150 && level < hash.maxlevel);
+
+		//	ds = hash.ds;
+
+		Triangle3D t3d = Triangle3D(pos[tri[pId][0]], pos[tri[pId][1]], pos[tri[pId][2]]);
+		for (int li = imin; li <= imax; li += 1)
+			for (int lj = jmin; lj <= jmax; lj += 1)
+				for (int lk = kmin; lk <= kmax; lk += 1)
+				{
+					int i = li, j = lj, k = lk;
+					Coord3D ABP11 = Coord3D(i * ds + hash.lo[0] - 0.1 * hash.ds * 10.0,
+						j * ds + hash.lo[1] - 0.1 * hash.ds * 10.0,
+						k * ds + hash.lo[2] - 0.1 * hash.ds * 10.0);
+					Coord3D ABP22 = Coord3D(i * ds + ds + hash.lo[0] + 0.1 * hash.ds * 10.0,
+						j * ds + ds + hash.lo[1] + 0.1 * hash.ds * 10.0,
+						k * ds + ds + hash.lo[2] + 0.1 * hash.ds * 10.0);
+					AlignedBox3D AABB2 = AlignedBox3D(ABP11, ABP22);
+
+					if (AABB2.meshInsert(t3d))
+					{
+						int gId = hash.getIndex(i, j, k, level);
+						if (gId != INVALID)
+						{
+							int index = atomicAdd(&(hash.counter[gId]), 1);
+							hash.ids[hash.index[gId] + index] = -pId - 1;
+						}
+
+					}
+
+
+				}
+
+	}
 	template<typename TDataType>
 	void GridHash<TDataType>::construct(DeviceArray<Coord>& pos)
 	{
@@ -328,9 +496,16 @@ namespace PhysIKA {
 	{
 		clear();
 
+		dim3 pDims = int(ceil(pos.size() / BLOCK_SIZE + 0.5f));
 		dim3 pDimsTri = int(ceil(tri.size() / BLOCK_SIZE + 0.5f));
 
-		K_AddTriNumber << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
+		//	K_CalculateParticleNumber << <pDims, BLOCK_SIZE >> > (*this, pos);
+		//	cuSynchronize();
+		if (!multi_grid)
+			K_AddTriNumber << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
+		else
+			K_Multi_AddTriNumber << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
+
 		cuSynchronize();
 
 		particle_num = m_reduce->accumulate(index, num);
@@ -347,20 +522,21 @@ namespace PhysIKA {
 		}
 		cuSafeCall(cudaMalloc((void**)&ids, particle_num * sizeof(int)));
 
-		
-		K_AddTriElement << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
-		
+
+		//	K_ConstructHashTable << <pDims, BLOCK_SIZE >> > (*this, pos);
+		//	cuSynchronize();
+		if (!multi_grid)
+			K_AddTriElement << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
+		else
+			K_Multi_AddTriElement << <pDimsTri, BLOCK_SIZE >> > (*this, tri, Tri_pos);
 		cuSynchronize();
 	}
 
 	template<typename TDataType>
 	void GridHash<TDataType>::clear()
 	{
-		if (counter != nullptr)
-			cuSafeCall(cudaMemset(counter, 0, num * sizeof(int)));
-		
-		if (index != nullptr)
-			cuSafeCall(cudaMemset(index, 0, num * sizeof(int)));
+		cuSafeCall(cudaMemset(counter, 0, num * sizeof(int)));
+		cuSafeCall(cudaMemset(index, 0, num * sizeof(int)));
 	}
 
 	template<typename TDataType>
